@@ -26,10 +26,14 @@ __pycache__/
 .vscode/
 .idea/
 
-# Docs and infra are not needed at runtime; excluding them keeps the build
-# context small and avoids cache busts on doc-only edits.
+# Docs aren't needed at runtime; excluding them keeps the build context small and avoids
+# cache busts on doc-only edits. infra/ is NOT excluded (unlike an earlier version of this
+# file) — infra/observability/{prometheus,grafana}/Dockerfile both COPY config files from
+# inside infra/observability/, which a blanket infra/ exclusion silently broke (Docker's
+# .dockerignore applies to every image built from this context, not just the root
+# Dockerfile). No secrets live under infra/ — terraform.tfvars is separately gitignored and
+# never committed — so including it is harmless, just a little extra (small, text-only)
+# build context for the main app image.
 docs/
-infra/
 *.md
 *.pdf
-docker-compose*.yml
