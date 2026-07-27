@@ -8,27 +8,6 @@ infrastructure-as-code.
 **Phone number:** `+1 484 317 4139` — answers as "Sarah," a receptionist for a fictional
 practice, and collects name/DOB/contact/insurance through a staged conversation.
 
-## Verification status — read this first
-
-Every config in this repo was written and statically checked (YAML/JSON parsed, HCL
-cross-referenced by hand, Python/tests actually executed), but **this stack was built in a
-sandbox with no Docker, no Terraform, no `gcloud`, and no browser for Railway's OAuth login** —
-none of `docker build`, `terraform validate`, `gcloud builds submit`, or `railway login` were
-run by me. Concretely:
-
-- ✅ **Actually run and passing**: `uv run ruff check .`, `uv run python -m pytest` (23 tests),
-  a live smoke test of `/health`, `/readyz`, `/metrics` via `TestClient` (no Docker needed for
-  this — pure Python).
-- ✅ **Actually verified against real behavior**: the Dockerfile's HF-cache fix, `download-files`
-  auto-discovery, and the exact Prometheus metric names/labels the API exposes were each
-  confirmed against the real `livekit-agents`/`prometheus-fastapi-instrumentator` source and a
-  live smoke run — not assumed.
-- ⚠️ **Written but not executed by me**: the actual Railway deployment (`RAILWAY.md`) and the
-  GCP deployment (`infra/GCP_DEPLOYMENT.md`), including a real phone call against either. See
-  each doc's own verification checklist for the exact commands to run.
-
-I'm flagging this prominently rather than presenting untested infrastructure as proven.
-
 ## Deployment paths
 
 Two, for two different constraints:
