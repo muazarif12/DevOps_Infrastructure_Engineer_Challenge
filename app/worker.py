@@ -23,6 +23,7 @@ from livekit.agents import (
 from livekit.plugins import ai_coustics, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+from app import metrics
 from app.flow import IntakeState, WelcomeStage
 from app.store import create_schema
 
@@ -77,6 +78,7 @@ server.setup_fnc = _load_models
 @server.rtc_session(agent_name=DISPATCH_AGENT_NAME)
 async def handle_call(ctx: JobContext) -> None:
     ctx.log_context_fields = {"room": ctx.room.name}
+    metrics.call_started()
 
     session = AgentSession[IntakeState](
         userdata=IntakeState(),

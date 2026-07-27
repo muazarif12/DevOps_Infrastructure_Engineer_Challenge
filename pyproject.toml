@@ -22,6 +22,9 @@ dependencies = [
     "psycopg[binary]",
     # Request-count/latency/status metrics for the API's /metrics endpoint (app/web.py).
     "prometheus-fastapi-instrumentator",
+    # Used directly (not just transitively via the instrumentator above) by app/metrics.py's
+    # Pushgateway heartbeat and app/web.py's patient_records_total gauge.
+    "prometheus-client",
 ]
 
 [dependency-groups]

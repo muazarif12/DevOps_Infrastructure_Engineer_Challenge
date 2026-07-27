@@ -33,6 +33,27 @@ def test_readyz(client):
     assert client.get("/readyz").json() == {"status": "ready"}
 
 
+def _patient_records_total(metrics_text: str) -> float:
+    for line in metrics_text.splitlines():
+        if line.startswith("patient_records_total "):
+            return float(line.split()[1])
+    raise AssertionError("patient_records_total not found in /metrics output")
+
+
+def test_metrics_reflects_real_patient_count(client):
+    # patient_records_total is computed fresh on each scrape (Gauge.set_function), straight
+    # from Postgres/SQLite — not a Pushgateway push, not the worker's (confirmed broken)
+    # multiprocess metrics. Archived rows must not count. Other tests in this file share the
+    # same DB, so assert on the *delta* rather than an absolute count.
+    before = _patient_records_total(client.get("/metrics").text)
+
+    created = client.post("/patients", json=NEW_PATIENT).json()
+    assert _patient_records_total(client.get("/metrics").text) == before + 1
+
+    client.delete(f"/patients/{created['record_id']}")
+    assert _patient_records_total(client.get("/metrics").text) == before
+
+
 def test_create_normalizes_and_returns_201(client):
     resp = client.post("/patients", json=NEW_PATIENT)
     assert resp.status_code == 201

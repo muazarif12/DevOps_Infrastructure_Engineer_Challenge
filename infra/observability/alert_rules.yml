@@ -10,7 +10,8 @@ groups:
           summary: "Voice agent worker is unreachable"
           description: >-
             Prometheus has not been able to scrape the worker's :9091/metrics for 2 minutes.
-            Inbound calls will not be answered. See docs/RUNBOOK.md#agent-not-answering-calls.
+            Inbound calls will not be answered. Check the worker service's Railway logs for a
+            crash loop or a stuck deploy.
 
       - alert: APIDown
         expr: up{job="api"} == 0
@@ -31,8 +32,37 @@ groups:
         annotations:
           summary: "Postgres exporter cannot reach the database"
           description: >-
-            Both the API and the worker persist patient data to this database. New intakes
-            will fail to save. See docs/RUNBOOK.md#database-down.
+            Needs postgres-exporter, which isn't deployed on Railway — this rule has no data
+            source right now and can never fire. `/readyz` (app/web.py) is the real, live
+            equivalent check today: it round-trips Postgres on every scrape/probe.
+
+      - alert: NoRecentCallActivity
+        expr: (time() - call_last_started_timestamp_seconds) > 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No calls dispatched to the worker in over an hour"
+          description: >-
+            call_last_started_timestamp_seconds is pushed once per call, at dispatch, from
+            app/worker.py's handle_call (see app/metrics.py). A real usage signal, not just a
+            liveness check — this can be quiet for reasons other than an outage (e.g. genuinely
+            no calls came in), so treat it as "worth checking," not "definitely broken."
+
+      - alert: RecentCallFailedToSave
+        expr: call_last_outcome == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The most recently completed call failed to save its intake"
+          description: >-
+            call_last_outcome is set by app/flow.py's save_record on every attempt (1=saved,
+            0=failed) — reflects only the single most recent call (see app/metrics.py's module
+            docstring on why this is a snapshot, not a per-call counter), so it clears itself
+            the moment the next call succeeds. A real failure here usually means the database
+            was unreachable during that call — check `/readyz` and the worker's logs for that
+            call's room name.
 
       - alert: BackupStale
         expr: (time() - backup_last_success_timestamp_seconds) > 5400
@@ -41,10 +71,9 @@ groups:
         annotations:
           summary: "No successful backup in over 90 minutes"
           description: >-
-            backup.sh runs every 15 minutes (see docker-compose.yml); missing 6+ in a row
-            means the backup loop has silently stopped. Dead-man's-switch style alert — the
-            absence of a heartbeat is the signal, not an explicit failure. See
-            docs/RUNBOOK.md#restore-from-backup.
+            Dead-man's-switch style alert — the absence of a heartbeat is the signal, not an
+            explicit failure. No backup loop pushes this heartbeat on Railway yet (see the
+            README's Backup Strategy); real and wired on the GCP path's Cloud Scheduler job.
 
       - alert: HighAPIErrorRate
         expr: >-
@@ -57,8 +86,8 @@ groups:
         annotations:
           summary: "API 5xx rate above 5% over 5 minutes"
           description: >-
-            Check Loki for {container="patient-intake-voice-api-1"} around this time to find
-            the tracebacks (app/obs.py logs one structured line per request, success or failure).
+            Check the api service's Railway logs (app/obs.py logs one structured JSON line
+            per request, tagged with a request_id) for the tracebacks around this time.
 
       - alert: WorkerLoadHigh
         expr: lk_agents_worker_load > 0.9
@@ -68,9 +97,10 @@ groups:
         annotations:
           summary: "Worker CPU load above 90% for 5 minutes"
           description: >-
-            lk_agents_worker_load is the SDK's own load signal, used to throttle job
-            dispatch — sustained high load means calls may start queuing or getting rejected.
-            Consider scaling to a second worker instance.
+            lk_agents_worker_load is the LiveKit SDK's own load signal — confirmed, by direct
+            verification against the live deployment, to never populate here (see the README's
+            Telemetry & Monitoring section). Real rule, no data source; will fire correctly the
+            moment that SDK limitation is resolved.
 
       - alert: HostMemoryLow
         expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
@@ -80,10 +110,9 @@ groups:
         annotations:
           summary: "Less than 10% memory available on the host"
           description: >-
-            Host-wide, not worker-specific — the worker's Prometheus multiprocess mode does
-            not expose per-process RSS. The inference process alone runs ~2.6 GB observed
-            locally; on a single-host deployment this is shared with Postgres, Prometheus,
-            Loki, and everything else in docker-compose.yml.
+            Needs node-exporter, which isn't deployed on Railway (no host-level access on a
+            PaaS) — no data source right now. Kept as reference for a host-level deployment
+            (the GCP path, or a bare VM) that would want this.
 
       - alert: DiskSpaceLow
         expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.10
@@ -93,5 +122,4 @@ groups:
         annotations:
           summary: "Less than 10% disk free on the host"
           description: >-
-            Postgres, Prometheus, and Loki all write to local disk in this single-host
-            deployment; this will start failing writes soon if unaddressed.
+            Same as HostMemoryLow — needs node-exporter, not deployed here, kept as reference.

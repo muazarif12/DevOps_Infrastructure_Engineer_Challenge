@@ -177,6 +177,12 @@ class PatientStore:
         stmt = stmt.order_by(PatientRow.created_at.desc())
         return list(self._session.scalars(stmt).all())
 
+    def count(self) -> int:
+        """Non-archived record count — a real SQL COUNT, not fetching rows just to len() them.
+        Backs the patient_records_total gauge in app/web.py."""
+        stmt = select(func.count()).select_from(PatientRow).where(PatientRow.archived_at.is_(None))
+        return self._session.scalar(stmt) or 0
+
     # -- writes -------------------------------------------------------------
 
     def add(self, data: NewPatient) -> PatientRow:

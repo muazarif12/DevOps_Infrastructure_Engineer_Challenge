@@ -3,9 +3,8 @@ global:
   evaluation_interval: 15s
 
 # alert_rules.yml is still loaded so its rules evaluate and show up on Prometheus's own
-# /alerts page — there's no Alertmanager deployed on Railway (scope was Prometheus + Grafana
-# only), so nothing routes/delivers these firing alerts anywhere yet. See docs/RUNBOOK.md and
-# the README's Known Risks for the honest state of alerting.
+# /alerts page — there's no Alertmanager deployed on Railway, so nothing routes/delivers these
+# firing alerts anywhere yet. See the README's Alerting and Known Risks sections.
 rule_files:
   - /etc/prometheus/alert_rules.yml
 
@@ -22,12 +21,23 @@ scrape_configs:
 
   # prometheus-fastapi-instrumentator (app/web.py) exposes http_requests_total,
   # http_request_duration_seconds, by handler/method/status — confirmed producing real
-  # content (unlike the worker's lk_agents_* metrics, see README's Known Risks).
+  # content (unlike the worker's lk_agents_* metrics). Also where patient_records_total lives
+  # (app/web.py's Gauge.set_function, straight from Postgres) — same endpoint, same scrape.
   - job_name: api
     metrics_path: /metrics
     static_configs:
       - targets: ["api.railway.internal:8000"]
 
-  # node-exporter, postgres-exporter, and pushgateway aren't deployed on Railway (no
-  # host-level access for the first two on a PaaS, and no backup loop pushing to the third
-  # yet) — the corresponding dashboard panels will read "No data" until/unless those exist.
+  # Call-level "last call" heartbeat gauges (app/metrics.py) — pushed under one fixed job
+  # name, not one group per call (see app/metrics.py's module docstring for why per-call
+  # grouping keys are a Pushgateway anti-pattern). honor_labels: the `job` label the push
+  # itself carries (patient_intake_worker) must win over Pushgateway's own auto-added
+  # `job="pushgateway"` label, same pattern scripts/backup.sh's heartbeat already relied on.
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway.railway.internal:9091"]
+
+  # node-exporter and postgres-exporter aren't deployed on Railway (no host-level access for
+  # either on a PaaS) — the corresponding dashboard panels read "No data" until/unless those
+  # exist.

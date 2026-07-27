@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
+from prometheus_client import Gauge
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.obs import RequestIDMiddleware, configure_logging
@@ -35,6 +36,22 @@ app.add_middleware(RequestIDMiddleware)
 # /metrics: request count, latency, and in-progress requests by method/path/status. Scraped by
 # Prometheus (see infra/observability/prometheus.yml) and alerted on (HighAPIErrorRate).
 Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
+# The one genuinely cumulative business metric in this project: how many patients are on
+# file, straight from Postgres. Doesn't need a Pushgateway or the worker's (confirmed broken)
+# multiprocess metrics — set_function() re-runs the query at scrape time, in-process, since
+# this endpoint is already the one place in the app confirmed to produce real metric content.
+_patients_total_gauge = Gauge(
+    "patient_records_total", "Non-archived patient records currently in the database"
+)
+
+
+def _count_patients() -> float:
+    with PatientStore.open() as store:
+        return float(store.count())
+
+
+_patients_total_gauge.set_function(_count_patients)
 
 
 def store_dependency() -> Iterator[PatientStore]:

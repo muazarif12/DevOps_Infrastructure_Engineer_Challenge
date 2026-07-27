@@ -17,6 +17,7 @@ from datetime import date
 
 from livekit.agents import Agent, RunContext, function_tool
 
+from app import metrics
 from app.schema import (
     NewPatient,
     PatientChanges,
@@ -497,12 +498,14 @@ class ReviewStage(IntakeStage):
                             "save_record: existing record vanished",
                             extra={"record_id": state.existing_record_id},
                         )
+                        metrics.call_completed(success=False)
                         return {"ok": False, "error": "existing record could not be found"}
                     row = store.apply_changes(row, changes)
                 log.info(
                     "patient record updated",
                     extra={"record_id": row.record_id, "action": "updated"},
                 )
+                metrics.call_completed(success=True)
                 return {"ok": True, "action": "updated", "record_id": row.record_id}
 
             new_patient = NewPatient(**state.collected())
@@ -515,6 +518,7 @@ class ReviewStage(IntakeStage):
             log.info(
                 "patient record created", extra={"record_id": row.record_id, "action": "created"}
             )
+            metrics.call_completed(success=True)
             return {"ok": True, "action": "created", "record_id": row.record_id}
         except Exception as exc:
             # Previously silent: the caller just heard a generic apology and the intake was
@@ -522,4 +526,5 @@ class ReviewStage(IntakeStage):
             # module docstring above) so "what happened on call X" is actually answerable —
             # this is exactly the kind of failure a locked/unreachable DB produces.
             log.exception("save_record failed", extra={"updating": state.updating})
+            metrics.call_completed(success=False)
             return {"ok": False, "error": str(exc)}

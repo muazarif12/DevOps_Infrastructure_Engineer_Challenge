@@ -2,7 +2,7 @@
   "title": "Patient Intake Voice — Overview",
   "uid": "patient-intake-overview",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "timezone": "browser",
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
@@ -91,6 +91,50 @@
         },
         "overrides": []
       }
+    },
+    {
+      "id": 12,
+      "title": "Patients Registered (Total)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 20, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus_ds" },
+      "targets": [{ "expr": "patient_records_total", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "description": "Real cumulative count, straight from Postgres (app/web.py's Gauge.set_function) — not a Pushgateway push, so it's a true running total, not a snapshot."
+    },
+    {
+      "id": 13,
+      "title": "Time Since Last Call Started",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 20, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus_ds" },
+      "targets": [{ "expr": "time() - call_last_started_timestamp_seconds", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1800 }, { "color": "red", "value": 3600 }] }
+        },
+        "overrides": []
+      },
+      "description": "Pushed once per call at dispatch (app/metrics.py's call_started, called from app/worker.py's handle_call) — a real usage signal, not just liveness. No data until the first call after this deployment."
+    },
+    {
+      "id": 14,
+      "title": "Last Call Outcome",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 20, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus_ds" },
+      "targets": [{ "expr": "call_last_outcome", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "FAILED", "color": "red" }, "1": { "text": "SAVED", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "description": "Set by app/flow.py's save_record on every attempt — a snapshot of the single most recent call, not a running success rate (see app/metrics.py's module docstring for why)."
     }
   ]
 }
