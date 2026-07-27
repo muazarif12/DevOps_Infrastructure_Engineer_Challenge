@@ -46,10 +46,13 @@ to scale on).
 Full steps in **`RAILWAY.md`** — worker + api + a managed Postgres, no cloud credentials
 needed. The one code change it required, `app/store.py` normalizing Railway's bare
 `postgresql://` `DATABASE_URL` to the `+psycopg` driver actually installed, is already in.
-Basic up/down monitoring is live (an external uptime check against both services' health
-endpoints); the custom Prometheus-style alert rules and automated backups aren't re-hosted
-against this deployment yet — see `RAILWAY.md`'s "Known gaps" and "Monitoring" sections for the
-honest accounting and the cheapest next step for each.
+Monitoring is two-layered and live: an external uptime check against both services' health
+endpoints, plus self-hosted Prometheus + Grafana as two more Railway services (scraping over
+Railway's private networking). Automated backups and alert *delivery* (as opposed to alert
+*rules*, which do evaluate) aren't wired up against this deployment yet — see `RAILWAY.md`'s
+"Observability" and "Known gaps" sections for the honest accounting, including a real,
+verified SDK limitation (the worker's own load/call-count metrics don't populate) found while
+setting this up.
 
 ## GCP deployment (Cloud Run, assuming credentials exist)
 
@@ -84,10 +87,16 @@ in sync.
   (tagged with the call's `room` name, `app/worker.py`), the API via `app/obs.py` (tagged with
   a `request_id`). Railway and GCP Cloud Run both expose a searchable log viewer natively; no
   extra shipping/aggregation infrastructure is deployed for either path currently.
-- **Alerting**: basic up/down only, and only on Railway (see above) — the fuller Prometheus/
-  Grafana/Alertmanager design (`infra/observability/`) was built and works as *config*, but has
-  no running deployment target right now (it was written against the local Compose stack,
-  since removed). Kept in the repo as a reference design, not live tooling — see Known Risks.
+- **Metrics/dashboards**: Prometheus + Grafana run as two Railway services (`RAILWAY.md`'s
+  "Observability" section), scraping the worker and api over private networking. The Overview
+  dashboard is trimmed to 5 panels that actually show real data (worker/api liveness, API
+  request rate/latency/error rate) — the worker's own load/active-call metrics are correctly
+  defined in the SDK but verified not to populate in this environment; see `RAILWAY.md` for
+  the full diagnosis.
+- **Alerting**: the rules (`infra/observability/alert_rules.yml`) are loaded into the deployed
+  Prometheus and evaluate on its own `/alerts` page, but nothing delivers them anywhere yet (no
+  Alertmanager deployed) — the external uptime check is the only alerting that actually
+  notifies anyone right now. See Known Risks.
 
 ## Verification checklist
 
@@ -137,21 +146,23 @@ quarter of the grading rubric is documentation, by the challenge's own weighting
 | Kubernetes | Hundreds of calls/week on one worker doesn't need it; the brief explicitly warns against over-engineering here. |
 | A second, GCP-native database | Railway's Postgres is already live and working; reusing it for the GCP path avoids running (and keeping in sync) two separate databases for one app. Documented as the first thing to change if the GCP path becomes primary. |
 | Multi-region / HA | A single always-on worker instance is a conscious single point of failure at this call volume (and, on Cloud Run, a deliberate cap — see `infra/GCP_DEPLOYMENT.md` — since two workers would race for the same LiveKit dispatches). |
-| External alert delivery (Slack/PagerDuty) | Not wired anywhere yet; the alert *rules* exist as config (`infra/observability/`) but have no running Prometheus to evaluate them against right now — see Known Risks. |
+| External alert delivery (Slack/PagerDuty) | Prometheus is running (Railway) and does evaluate `infra/observability/alert_rules.yml`, visible on its own `/alerts` page — but nothing routes those firings anywhere (no Alertmanager deployed). See Known Risks. |
 | Alembic / schema migrations | One table, `create_all()` only — adding migration tooling for a schema that hasn't changed yet buys nothing today. Flagged as required before the *next* schema change. |
-| Full OpenTelemetry trace export for per-call LLM/STT/TTS latency | Investigated first: the pinned `livekit-agents` version's `metrics.LLMMetrics`/`TTSMetrics`/etc. classes have no active producer in this release (confirmed by exhaustively grepping the installed package — nothing in the SDK actually constructs one), so the `session.on("metrics_collected", ...)` pattern from older docs is a dead end here. What *is* real: the SDK's built-in Prometheus exporter (worker load, active call count, process-init timing) and per-call structured logs correlated by room name. Standing up a Tempo/Jaeger backend to consume the SDK's `set_tracer_provider` spans is the next step, not fabricated as already done. |
+| Full OpenTelemetry trace export for per-call LLM/STT/TTS latency | Investigated first: the pinned `livekit-agents` version's `metrics.LLMMetrics`/`TTSMetrics`/etc. classes have no active producer in this release (confirmed by exhaustively grepping the installed package — nothing in the SDK actually constructs one), so the `session.on("metrics_collected", ...)` pattern from older docs is a dead end here. The SDK *does* define its own worker-load/active-call/process-init Prometheus metrics with correct multiprocess wiring (`livekit/agents/telemetry/metrics.py`) — but verified, by direct querying against the live Railway deployment, to never actually populate (even for an event known to have fired). Only `up` (scrape liveness) and per-call structured logs correlated by room name are real. Standing up a Tempo/Jaeger backend to consume the SDK's `set_tracer_provider` spans is the next step for real per-call latency, not fabricated as already done. |
 | Audit logging, encryption-in-transit between services, per-user auth | All real HIPAA gaps, all explicit in `docs/SECURITY.md` rather than half-implemented. |
-| Self-hosted Prometheus/Grafana/Loki/Alertmanager, actually running somewhere | The config exists and is real (`infra/observability/`), written against a local Docker Compose stack that was later removed once Railway/GCP became the actual deployment targets. It's kept as a reference design, not claimed as live tooling — see Known Risks. |
+| Self-hosted node-exporter/postgres-exporter/Loki | Would need host-level access Railway's PaaS model doesn't give the first two, and no backup/log-shipping loop exists yet to feed the third. The corresponding dashboard panels were removed rather than left as permanent "No data" — see `RAILWAY.md`'s Observability section. |
 
 ## Known risks
 
 - **This session's verification gap** (see top of file) is the single biggest risk right now —
   neither deployment path has been run end-to-end by me; the backup/restore drills and a real
   phone call against either need to actually happen once.
-- **`infra/observability/` (Prometheus/Grafana/Loki/Alertmanager config) is not deployed
-  anywhere right now** — it's real, reviewable config, but nothing currently runs it. Either
-  wire it up against one of the two live paths, or remove it to avoid the repo describing
-  tooling that isn't actually operating.
+- **Prometheus + Grafana are deployed and live on Railway** (`RAILWAY.md`'s Observability
+  section) — the dashboard was trimmed to 5 panels that all show confirmed real data (worker/
+  api liveness, API request rate/latency/error rate). A related, separately-verified finding:
+  the worker's own load/active-call metrics never populate despite being correctly defined in
+  the SDK — real limitation, not a config gap. No Alertmanager is deployed, so the alert rules
+  evaluate but don't notify anyone.
 - **No authentication on the patient-record API at all**, on either deployment path — an
   API-key requirement was built and then deliberately rolled back to keep the app matching its
   pre-assessment behavior. Anyone who can reach the API can read/write/archive every patient
@@ -171,8 +182,9 @@ quarter of the grading rubric is documentation, by the challenge's own weighting
 
 1. Run both deployment paths' verification checklists for real (Railway now, GCP once
    credentials + `terraform`/`gcloud` are available).
-2. Decide whether `infra/observability/` gets wired up against one of the live deployments or
-   removed — right now it's the one piece of the repo describing tooling that isn't operating.
+2. Deploy Alertmanager as a third Railway observability service (or point `/metrics` at
+   Grafana Cloud's free tier) so the alert rules that already evaluate actually notify someone,
+   not just show up on Prometheus's own `/alerts` page.
 3. Add real backups + basic alerting to whichever path ends up primary, if it isn't already
    (GCP has both built in; Railway currently only has the uptime check).
 4. Wire an OTel trace exporter (Tempo/Grafana Cloud Tempo) so per-call LLM/STT/TTS latency is
