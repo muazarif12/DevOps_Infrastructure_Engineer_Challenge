@@ -1,73 +1,59 @@
-variable "aws_region" {
-  description = "AWS region to deploy into."
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "environment" {
-  description = "Short environment name, used in tags and the SSM parameter path."
-  type        = string
-  default     = "prod"
-}
-
-variable "instance_type" {
-  description = "EC2 instance size. t3.large (2 vCPU/8GB) covers the worker's ~2.6GB inference process plus Postgres/Prometheus/Loki/Grafana on the same host."
-  type        = string
-  default     = "t3.large"
-}
-
-variable "root_volume_size_gb" {
-  description = "Root EBS volume size. Postgres + Prometheus + Loki all accumulate data here."
-  type        = number
-  default     = 50
-}
-
-variable "ssh_key_name" {
-  description = "Name of an existing EC2 key pair for emergency SSH access. Leave null to disable SSH entirely (SSM Session Manager, granted via the instance role below, is the preferred access path)."
-  type        = string
-  default     = null
-}
-
-variable "allowed_ssh_cidr" {
-  description = "CIDR allowed to reach port 22, if ssh_key_name is set. Never leave this as 0.0.0.0/0 in a real deployment — scope it to a known office/VPN range."
-  type        = string
-  default     = "0.0.0.0/0"
-}
-
-variable "public_domain" {
-  description = "Hostname to serve the API/Grafana on (Caddy's automatic-HTTPS domain). Matches PUBLIC_DOMAIN in .env. e.g. candidate-name.stratus-eval.dev"
+variable "project_id" {
+  description = "GCP project ID. Assumed to already exist with billing enabled."
   type        = string
 }
 
-variable "manage_dns" {
-  description = "Whether Terraform should create the Route53 A record for public_domain. Set false (and point the record at the EIP output manually) if the hosted zone lives in an account/credentials this Terraform run doesn't have access to."
-  type        = bool
-  default     = false
+variable "region" {
+  description = "Region for Artifact Registry, Cloud Run, and the GCS backup bucket."
+  type        = string
+  default     = "us-central1"
 }
 
-variable "route53_zone_id" {
-  description = "Hosted zone id to create the A record in. Required if manage_dns is true."
+variable "repo_name" {
+  description = "Artifact Registry (Docker) repository name."
   type        = string
-  default     = null
+  default     = "patient-intake-voice"
+}
+
+variable "worker_service_name" {
+  type    = string
+  default = "patient-intake-worker"
+}
+
+variable "api_service_name" {
+  type    = string
+  default = "patient-intake-api"
 }
 
 variable "backup_bucket_name" {
-  description = "Globally-unique S3 bucket name for database backups. Bucket names collide across all of AWS, not just this account, so the default below is unlikely to be free — override it."
+  description = "GCS bucket name for database backups. Bucket names are globally unique across all of GCS — override this."
   type        = string
   default     = "patient-intake-voice-backups"
 }
 
-variable "git_repo_url" {
-  description = "Repository the instance's cloud-init pulls at boot to build/run the compose stack."
+# --- GitHub / Cloud Build trigger -----------------------------------------------------------
+# One manual, one-time prerequisite this can't fully automate: the Cloud Build GitHub App must
+# be connected to this repo via the GCP Console (Cloud Build → Triggers → Connect Repository)
+# before `terraform apply` can create the trigger below — Google doesn't expose that OAuth
+# handshake through the provider. See infra/GCP_DEPLOYMENT.md.
+
+variable "github_owner" {
+  description = "GitHub username/org that owns the repo (e.g. the \"you\" in github.com/you/repo)."
   type        = string
 }
 
-# --- Secrets -------------------------------------------------------------------------------
-# Passed in via a .tfvars file that is NEVER committed (see .gitignore) — e.g.
-# `terraform apply -var-file=secrets.auto.tfvars`, or supplied by CI as TF_VAR_* env vars.
-# Terraform writes these into SSM Parameter Store (SecureString); cloud-init reads them back
-# at boot to build the instance's .env — they are never baked into the AMI, user-data logs,
-# or this repo.
+variable "github_repo" {
+  description = "GitHub repository name (without the owner prefix)."
+  type        = string
+}
+
+variable "trigger_branch" {
+  description = "Branch pattern (regex) that triggers a build/deploy."
+  type        = string
+  default     = "^main$"
+}
+
+# --- LiveKit (required by the worker) -------------------------------------------------------
 
 variable "livekit_url" {
   type      = string
@@ -84,12 +70,35 @@ variable "livekit_api_secret" {
   sensitive = true
 }
 
-variable "postgres_password" {
+# --- Database — Railway-hosted Postgres, not a GCP-managed database ------------------------
+# Cloud Run needs no VPC connector for this: it's a normal outbound internet connection to
+# Railway's public Postgres proxy, same as connecting from anywhere else.
+
+variable "railway_pg_host" {
+  description = "Host from Railway's Postgres connection details, e.g. containers-us-west-1.railway.app."
+  type        = string
+  sensitive   = true
+}
+
+variable "railway_pg_port" {
+  description = "Port from Railway's Postgres connection details — Railway assigns a random external port per-project, it's essentially never 5432."
+  type        = string
+  sensitive   = true
+}
+
+variable "railway_pg_database" {
   type      = string
+  default   = "railway"
   sensitive = true
 }
 
-variable "grafana_admin_password" {
+variable "railway_pg_user" {
+  type      = string
+  default   = "postgres"
+  sensitive = true
+}
+
+variable "railway_pg_password" {
   type      = string
   sensitive = true
 }

@@ -2,21 +2,14 @@ terraform {
   required_version = ">= 1.7"
 
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.60"
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 6.10"
     }
   }
 }
 
-provider "aws" {
-  region = var.aws_region
-
-  default_tags {
-    tags = {
-      Project     = "patient-intake-voice"
-      Environment = var.environment
-      ManagedBy   = "terraform"
-    }
-  }
+provider "google" {
+  project = var.project_id
+  region  = var.region
 }

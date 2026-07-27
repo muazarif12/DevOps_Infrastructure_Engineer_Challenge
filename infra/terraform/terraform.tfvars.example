@@ -1,26 +1,24 @@
-# Copy to terraform.tfvars (or secrets.auto.tfvars for just the secret block) and fill in.
-# NEVER commit the filled-in file — *.tfvars is already in .gitignore, terraform.tfvars.example
-# is the only tfvars file meant to be tracked.
+# Copy to terraform.tfvars and fill in. NEVER commit the filled-in file — *.tfvars is already
+# gitignored, this .example file is the only one meant to be tracked.
 
-aws_region    = "us-east-1"
-environment   = "prod"
-public_domain = "candidate-name.stratus-eval.dev" # the subdomain provided for this exercise
-git_repo_url  = "https://github.com/<you>/PatientIntakeVoice.git"
+project_id = "your-gcp-project-id"
+region     = "us-central1"
 
-# Leave false unless route53_zone_id below is a zone this AWS account/credentials can actually
-# write to — otherwise create the A record manually using the `public_ip` output.
-manage_dns      = false
-route53_zone_id = null
+# Must match a real GitHub repo with the Cloud Build GitHub App already connected once via
+# GCP Console (Cloud Build → Triggers → Connect Repository) — see infra/GCP_DEPLOYMENT.md.
+github_owner = "your-github-username"
+github_repo  = "PatientIntakeVoice"
 
-backup_bucket_name = "patient-intake-voice-backups-change-me" # must be globally unique
+backup_bucket_name = "your-globally-unique-backup-bucket-name"
 
-# instance_type, root_volume_size_gb, ssh_key_name, allowed_ssh_cidr all have reasonable
-# defaults in variables.tf — override here only if needed.
+# --- LiveKit ---
+livekit_url        = "wss://your-project.livekit.cloud"
+livekit_api_key    = "..."
+livekit_api_secret = "..."
 
-# --- Secrets (sensitive — better supplied via TF_VAR_* env vars or a separate, gitignored
-# secrets.auto.tfvars than committed even to a local example) ---
-livekit_url            = "wss://your-project.livekit.cloud"
-livekit_api_key        = "..."
-livekit_api_secret     = "..."
-postgres_password      = "..."
-grafana_admin_password = "..."
+# --- Railway Postgres connection details (from Railway's Postgres service → Variables tab) ---
+railway_pg_host     = "containers-us-west-1.railway.app"
+railway_pg_port     = "6543"
+railway_pg_database = "railway"
+railway_pg_user     = "postgres"
+railway_pg_password = "..."

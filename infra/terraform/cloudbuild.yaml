@@ -1,0 +1,83 @@
+# Cloud Build pipeline: build the two images this repo produces, push them to Artifact
+# Registry, then update the three things that run them (worker + api Cloud Run services, the
+# backup Cloud Run Job). Triggered on every push to main by the google_cloudbuild_trigger in
+# cloudbuild.tf — substitution variables (_REGION, _REPO, etc.) come from there; run it
+# manually with `gcloud builds submit --config infra/terraform/cloudbuild.yaml` (see deploy.sh)
+# for the first, bootstrap deploy.
+#
+# Deliberately minimal `gcloud run deploy`/`jobs update` calls — only --image is passed.
+# Everything else (secrets, scaling, service account, command/args) was already set by
+# Terraform when it first created these services/job, and Cloud Run preserves those settings
+# across a deploy that only changes the image. Terraform owns the service *definition*; this
+# pipeline owns the *image* running inside it — see cloud_run.tf's `lifecycle.ignore_changes`.
+
+steps:
+  - id: build-app-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-voice:${COMMIT_SHA}
+      - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-voice:latest
+      - .
+
+  - id: build-backup-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f=infra/backup/Dockerfile
+      - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-backup:${COMMIT_SHA}
+      - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-backup:latest
+      - .
+
+  - id: push-images
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-voice
+        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-backup
+
+  - id: deploy-worker
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_WORKER_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-voice:${COMMIT_SHA}
+      - --region=${_REGION}
+      - --quiet
+
+  - id: deploy-api
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_API_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-voice:${COMMIT_SHA}
+      - --region=${_REGION}
+      - --quiet
+
+  - id: deploy-backup-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - ${_BACKUP_JOB}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-backup:${COMMIT_SHA}
+      - --region=${_REGION}
+      - --quiet
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-voice:${COMMIT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-voice:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-backup:${COMMIT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/patient-intake-backup:latest

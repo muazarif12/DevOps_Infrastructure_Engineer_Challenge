@@ -50,6 +50,12 @@ VOICE_ID = "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"
 _PROM_MULTIPROC_DIR = os.environ.get("PROMETHEUS_MULTIPROC_DIR", "/tmp/lk_prometheus_multiproc")
 
 server = AgentServer(
+    # Cloud Run injects PORT and health-checks the container on it — the worker doesn't serve
+    # real traffic there (it's egress-only to LiveKit Cloud), but the container still needs to
+    # answer on whatever port Cloud Run expects or the revision never becomes ready. Defaults to
+    # 8081 (the SDK's own default) everywhere else, since PORT is unset on Railway/Compose/bare
+    # `uv run`.
+    port=int(os.environ.get("PORT", "8081")),
     prometheus_port=int(os.environ.get("WORKER_PROMETHEUS_PORT", "9091")),
     prometheus_multiproc_dir=_PROM_MULTIPROC_DIR,
 )
