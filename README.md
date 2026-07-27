@@ -12,8 +12,9 @@ practice, and collects name/DOB/contact/insurance through a staged conversation.
 
 Every config in this repo was written and statically checked (YAML/JSON parsed, HCL
 cross-referenced by hand, Python/tests actually executed), but **this stack was built in a
-sandbox with neither Docker nor Terraform installed** — I could not run `docker compose up`,
-build the image, or `terraform validate` myself. Concretely:
+sandbox with no Docker, no Terraform, and no browser for Railway's OAuth login** — I could not
+run `docker compose up`, build the image, `terraform validate`, or `railway login` myself.
+Concretely:
 
 - ✅ **Actually run and passing**: `uv run ruff check .`, `uv run python -m pytest` (24 tests),
   a live smoke test of `/health`, `/readyz`, `/metrics`, and the API-key boundary via
@@ -22,23 +23,30 @@ build the image, or `terraform validate` myself. Concretely:
   auto-discovery, and the exact Prometheus metric names/labels the API exposes were each
   confirmed against the real `livekit-agents`/`prometheus-fastapi-instrumentator` source and a
   live smoke run — not assumed.
-- ⚠️ **Written but not executed**: `docker compose build/up`, the backup→restore drill, the
-  Terraform plan, and the actual phone call against the containerized stack. These need to be
-  run once on a machine with Docker (and, for the cloud path, Terraform + real AWS credentials)
-  before this is trustworthy — see the **Verification checklist** below for the exact commands.
+- ⚠️ **Written but not executed by me**: the actual Railway deployment (`RAILWAY.md`),
+  `docker compose build/up`, the backup→restore drill, the Terraform plan, and a real phone
+  call against either deployed stack. See the **Verification checklist** below for the exact
+  commands to run.
 
-I'm flagging this prominently rather than presenting untested infrastructure as proven. Given
-more time, closing this gap is step one.
+I'm flagging this prominently rather than presenting untested infrastructure as proven.
 
-## Why no cloud deployment
+## Deployment paths
 
-AWS/GCP credentials for Part 2 were not received during this session. Rather than submit
-nothing for the infrastructure half, everything below runs identically on a single machine via
-Docker Compose, and the Terraform in `infra/terraform/` is written and ready to `apply` the
-moment credentials arrive — it's `us-east-1`/AWS-shaped, provisions a real S3 bucket + IAM role
-+ SSM-stored secrets + EC2 host, and needs zero code changes from the Compose version (see
-`docker-compose.yml`'s `local-s3` profile notes for exactly what changes: drop MinIO, use the
-instance role).
+Three, for three different constraints:
+
+1. **Railway (`RAILWAY.md`) — the actual live deployment for this submission.** Cloud
+   credentials for a self-managed AWS deploy weren't available, and a managed platform is
+   explicitly sanctioned by the challenge FAQ ("justify it and build operational tooling on top"
+   — not just clicking Deploy). Covers worker + api + Postgres, which is what needs to actually
+   answer the phone number.
+2. **Docker Compose (below) — full local stack for review.** Everything Railway's PaaS model
+   can't host cleanly (self-hosted Prometheus/Grafana/Loki/Alertmanager, since Railway has no
+   host-level access for node-exporter/Promtail and already gives you metrics/logs natively)
+   still runs here, so the complete operational design is demonstrable even though it's not
+   what's live on Railway.
+3. **Terraform (`infra/terraform/`) — ready for AWS the moment real cloud credentials exist.**
+   Provisions a real S3 bucket + IAM role + SSM-stored secrets + EC2 host running this same
+   Compose stack; needs zero code changes, just `terraform apply` once credentials arrive.
 
 ## Architecture
 
@@ -71,7 +79,7 @@ receives call dispatches on that same connection. Every port it exposes (`:8081`
 `:9091` metrics) is for the operator, not the phone path — which is why this whole stack can run
 on a laptop and the phone number stays answerable the whole time it's up.
 
-## Quickstart (local review — no cloud credentials needed)
+## Quickstart — Docker Compose (full-stack local review)
 
 ```bash
 cp .env.example .env   # fill in LIVEKIT_* and pick passwords for everything else
@@ -89,7 +97,14 @@ curl localhost:8000/readyz              # {"status": "ready"} — actually round
 curl -H "X-API-Key: $API_KEY" localhost:8000/patients
 ```
 
-Call `+1 484 317 4139` — same phone number as Part 1, now backed by this stack.
+> **Don't run this worker at the same time as the Railway deployment.** Both register under
+> the same LiveKit agent name (`my-agent`), and LiveKit dispatches a given call to *whichever*
+> registered worker it picks — with two different Postgres databases behind them, that's a
+> confusing way to lose track of which one saved a given call's record. Stop one before
+> starting the other.
+
+Call `+1 484 317 4139` — same phone number as Part 1 — while whichever worker you intend to
+test (this one, or Railway's) is the only one registered.
 
 Dashboards/UIs (bind to `127.0.0.1` only — not internet-exposed, see `docs/SECURITY.md`):
 
@@ -103,6 +118,14 @@ Dashboards/UIs (bind to `127.0.0.1` only — not internet-exposed, see `docs/SEC
 Only the patient-record API itself goes through Caddy/TLS (`https://<PUBLIC_DOMAIN>/`) — it's
 the one service with a real reason to be internet-facing; everything else stays operator-only,
 direct-port, on this host (see `infra/caddy/Caddyfile`).
+
+## Railway deployment (the live path for this submission)
+
+Full steps in **`RAILWAY.md`** — worker + api + a managed Postgres, no cloud credentials
+needed. The one code change it required, `app/store.py` normalizing Railway's bare
+`postgresql://` `DATABASE_URL` to the `+psycopg` driver actually installed, is already in.
+Alerting/backups aren't re-hosted on Railway itself in this pass (see `RAILWAY.md`'s "Known
+gaps" section for the honest reasoning and the cheapest next step for each).
 
 ## Cloud deployment (AWS, once credentials exist)
 
@@ -140,16 +163,19 @@ covers S3 access, so no MinIO on that box at all). Route53 record creation is op
 
 ## Verification checklist
 
-Run these once Docker (and, for the last two, Terraform + AWS creds) are available:
-
+0. **Railway (do this one — it's the live submission path)**: follow `RAILWAY.md`, then call
+   `+1 484 317 4139` and confirm `GET /patients` (with the API key) shows the new row in
+   Railway's Postgres. Check both services' Railway log viewers for a clean deploy — worker
+   should log `"registered worker"` once connected to LiveKit Cloud.
 1. `uv run ruff check . && uv run python -m pytest -q` — should already be green; re-run after
    any change.
 2. `docker compose --profile local-s3 up -d --build` → `docker compose ps` all healthy; `docker
    compose logs worker | grep "registered worker"` confirms the HF-cache Dockerfile fix worked
    (this exact failure mode — turn-detector model missing at runtime — was the very first bug
-   found in the original Dockerfile).
-3. Call `+1 484 317 4139`, complete an intake, confirm `psql`/`GET /patients` shows the new
-   Postgres row.
+   found in the original Dockerfile). **Don't run this at the same time as the Railway
+   deployment** — see the caution in the Quickstart section above.
+3. With the Compose stack up instead of Railway's: call `+1 484 317 4139`, complete an intake,
+   confirm `psql`/`GET /patients` shows the new Postgres row.
 4. `curl localhost:8000/patients` with no `X-API-Key` header → expect `401`.
 5. Grafana Overview dashboard shows live panels; Loki Explore, filtered by a call's `room`,
    shows that call's full transcript/tool-call trace (see `docs/RUNBOOK.md`).
@@ -194,6 +220,7 @@ grade on its own).
 | Alembic / schema migrations | One table, `create_all()` only — adding migration tooling for a schema that hasn't changed yet buys nothing today. Flagged as required before the *next* schema change. |
 | Full OpenTelemetry trace export for per-call LLM/STT/TTS latency | Investigated first: the pinned `livekit-agents` version's `metrics.LLMMetrics`/`TTSMetrics`/etc. classes have no active producer in this release (confirmed by exhaustively grepping the installed package — nothing in the SDK actually constructs one), so the `session.on("metrics_collected", ...)` pattern from older docs is a dead end here. What *is* real and wired up: the SDK's built-in Prometheus exporter (worker load, active call count, process-init timing) and per-call structured logs correlated by room name, both scraped/shipped today. Standing up a Tempo/Jaeger backend to consume the SDK's `set_tracer_provider` spans is the next step, not fabricated as already done. |
 | Audit logging, encryption-in-transit between containers, per-user auth | All real HIPAA gaps, all explicit in `docs/SECURITY.md` rather than half-implemented. |
+| Self-hosted Prometheus/Grafana/Loki/Alertmanager *on Railway itself* | Railway's PaaS model has no host-level access for `node-exporter`/Promtail, and already provides per-service metrics/logs natively — re-hosting the same stack there would be fighting the platform, not using it. The full stack still exists, tested, in `docker-compose.yml`; `RAILWAY.md` documents the gap and the cheapest fix (an external uptime check) rather than silently dropping it. |
 
 ## Known risks
 
@@ -208,18 +235,27 @@ grade on its own).
   release; "rollback" today is `git checkout` + rebuild (see `docs/RUNBOOK.md`).
 - **Alerting has no external delivery** by scoped choice — an alert firing at 3 AM is visible in
   a UI nobody is looking at until someone checks it.
+- **The live Railway deployment has no alerting or backups yet** — the custom alert rules and
+  backup/restore path are real and tested against the Compose stack, but not re-hosted against
+  what's actually answering the phone number right now. See `RAILWAY.md`'s "Known gaps."
 
 ## Next steps, in the order I'd actually do them
 
-1. Run the verification checklist above for real, on a machine with Docker.
-2. Wire an OTel trace exporter (Tempo/Grafana Cloud Tempo) so per-call LLM/STT/TTS latency is
+1. **Add an external uptime check** (e.g. UptimeRobot's free tier) against the live Railway
+   deployment's `/health` and `/readyz` — zero infrastructure of its own, and closes the
+   single biggest gap left by the Railway pivot (no alerting live where the phone number
+   actually is right now).
+2. Run the rest of the verification checklist above for real, on a machine with Docker.
+3. Wire the same `scripts/backup.sh`/`restore.sh` against Railway's Postgres, pointed at a
+   real (free-tier) S3-compatible bucket, as a small scheduled Railway service.
+4. Wire an OTel trace exporter (Tempo/Grafana Cloud Tempo) so per-call LLM/STT/TTS latency is
    graphable, not just log-greppable.
-3. Move Postgres to RDS (Multi-AZ, PITR) once on AWS; keep the same backup scripts as a second,
+5. Move Postgres to RDS (Multi-AZ, PITR) once on AWS; keep the same backup scripts as a second,
    independent recovery path.
-4. Add a Slack receiver to Alertmanager and an external (off-host) uptime check.
-5. Replace the single shared `API_KEY` with per-caller OAuth/OIDC once there's more than one
-   consuming system, and add the audit-log table from `docs/SECURITY.md`.
-6. Tag and push release images from CI instead of building on the host at deploy time, enabling
+6. Add a Slack receiver to Alertmanager (Compose path) and replace the single shared `API_KEY`
+   with per-caller OAuth/OIDC once there's more than one consuming system, plus the audit-log
+   table from `docs/SECURITY.md`.
+7. Tag and push release images from CI instead of building on the host at deploy time, enabling
    true immutable-image rollback.
 
 ---

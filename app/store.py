@@ -24,8 +24,23 @@ from sqlalchemy.orm import (
 
 from app.schema import NewPatient, PatientChanges
 
+
+def _normalize_db_url(url: str) -> str:
+    """Managed-Postgres providers (Railway, Heroku, ...) hand out a bare `postgres://` or
+    `postgresql://` URL with no driver suffix. SQLAlchemy's default resolution for that tries
+    to import psycopg2, which isn't installed here (we use psycopg v3) — normalize to the
+    driver we actually have rather than requiring every deployment target to set the URL just
+    right. Anything already specifying a driver (`postgresql+psycopg://`, `sqlite://`, ...) is
+    left untouched.
+    """
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix) :]
+    return url
+
+
 _DEFAULT_DB_FILE = Path(__file__).resolve().parent.parent / "records.db"
-DATABASE_URL = os.environ.get("INTAKE_DB_URL", f"sqlite:///{_DEFAULT_DB_FILE}")
+DATABASE_URL = _normalize_db_url(os.environ.get("INTAKE_DB_URL", f"sqlite:///{_DEFAULT_DB_FILE}"))
 
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 _engine = create_engine(
