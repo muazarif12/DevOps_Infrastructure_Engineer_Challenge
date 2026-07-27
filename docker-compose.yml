@@ -77,7 +77,6 @@ services:
         condition: service_healthy
     environment:
       INTAKE_DB_URL: postgresql+psycopg://${POSTGRES_USER:-intake}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-intake}
-      API_KEY: ${API_KEY:?set API_KEY in .env}
     networks: [backend, edge]
     healthcheck:
       test:

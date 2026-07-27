@@ -204,7 +204,6 @@ locals {
     "livekit_api_key"        = var.livekit_api_key
     "livekit_api_secret"     = var.livekit_api_secret
     "postgres_password"      = var.postgres_password
-    "api_key"                = var.api_key
     "grafana_admin_password" = var.grafana_admin_password
   }
 }

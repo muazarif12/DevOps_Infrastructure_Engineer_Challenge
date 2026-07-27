@@ -89,12 +89,6 @@ variable "postgres_password" {
   sensitive = true
 }
 
-variable "api_key" {
-  description = "Value patient-record API clients must send as X-API-Key."
-  type        = string
-  sensitive   = true
-}
-
 variable "grafana_admin_password" {
   type      = string
   sensitive = true

@@ -34,9 +34,6 @@ Cartesia, ai-coustics. None of this is negotiated or verified here — flagging 
 
 ## Implemented
 
-- **API authentication** (`app/web.py`) — every `/patients*` route requires `X-API-Key`,
-  checked with `secrets.compare_digest` (constant-time) and fails closed if `API_KEY` isn't
-  configured at all, rather than silently running open.
 - **Encrypted secrets at rest for the AWS path** — Terraform stores every credential in SSM
   Parameter Store as `SecureString` (`infra/terraform/main.tf`), scoped IAM read access to
   exactly `/patient-intake-voice/<env>/*`, never in the AMI or committed anywhere.
@@ -65,7 +62,7 @@ Cartesia, ai-coustics. None of this is negotiated or verified here — flagging 
 |---|---|---|
 | No audit log of who read/changed a record | §164.312(b) — Audit controls | A dedicated, append-only audit table (who, what, when) for every read/write, separate from application logs which aren't tamper-evident or access-controlled the same way. |
 | No encryption-in-transit enforcement inside the docker network | §164.312(e) | Postgres connections between `api`/`worker` and `postgres` are plaintext on the internal Docker network today — acceptable only because that network isn't reachable from outside the host. A multi-host deployment would need TLS between services. |
-| No real user auth (single shared API key) | §164.312(d) — Person/entity authentication | A single static key means no per-user accountability; real deployment needs per-staff-member credentials (OAuth/OIDC) so "who accessed this record" is answerable. |
+| **No authentication on `/patients*` at all** | §164.312(d) — Person/entity authentication | An API-key requirement was implemented and then deliberately rolled back mid-build to keep the app matching its pre-assessment behavior (see `RAILWAY.md`) — anyone who can reach the API can read/write/archive every patient record right now. Real deployment needs per-staff-member credentials (OAuth/OIDC), not even just a shared key, so "who accessed this record" is answerable. **This is the single biggest gap in the current deployment.** |
 | No formal data retention/deletion policy | §164.310(d)(2)(i) | `DELETE /patients/{id}` is a soft delete (`archived_at`) — the row, and its PHI, is retained forever. A real policy needs an actual purge process and a defined retention period. |
 | No BAAs in place | 45 CFR §164.502(e) | LiveKit/Deepgram/OpenAI/Cartesia/ai-coustics all need executed BAAs before real PHI flows through them. |
 | `allowed_ssh_cidr` defaults to `0.0.0.0/0` | — | Terraform variable default is permissive for first-run convenience; **must** be scoped to a known range before `ssh_key_name` is actually set in any real deployment. |
@@ -74,10 +71,11 @@ Cartesia, ai-coustics. None of this is negotiated or verified here — flagging 
 
 ## Attack surface, briefly
 
-- **Public**: ports 80/443 (Caddy → API + Grafana sub-path only). Grafana itself still has its
-  own login (admin password from SSM/`.env`) behind that.
-- **Not public**: Prometheus, Alertmanager, MinIO console, Postgres, the worker's health/metrics
-  port — all internal-network-only or `127.0.0.1`-bound.
+- **Public**: ports 80/443 (Caddy → the patient-record API only) — and, per the gap above,
+  that API itself has no authentication in front of it right now.
+- **Not public**: Grafana, Prometheus, Alertmanager, MinIO console, Postgres, the worker's
+  health/metrics port — all internal-network-only or `127.0.0.1`-bound (Grafana still has its
+  own login regardless).
 - **Worker has no listening surface relevant to calls at all** — it's egress-only to LiveKit
   Cloud (WSS) and LiveKit Inference (HTTPS); there is no inbound port a caller's SIP session
   reaches on this host directly.

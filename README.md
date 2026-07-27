@@ -16,9 +16,9 @@ sandbox with no Docker, no Terraform, and no browser for Railway's OAuth login**
 run `docker compose up`, build the image, `terraform validate`, or `railway login` myself.
 Concretely:
 
-- ✅ **Actually run and passing**: `uv run ruff check .`, `uv run python -m pytest` (24 tests),
-  a live smoke test of `/health`, `/readyz`, `/metrics`, and the API-key boundary via
-  `TestClient` (no Docker needed for this — pure Python).
+- ✅ **Actually run and passing**: `uv run ruff check .`, `uv run python -m pytest` (23 tests),
+  a live smoke test of `/health`, `/readyz`, `/metrics` via `TestClient` (no Docker needed for
+  this — pure Python).
 - ✅ **Actually verified against real behavior**: the Dockerfile's HF-cache fix, `download-files`
   auto-discovery, and the exact Prometheus metric names/labels the API exposes were each
   confirmed against the real `livekit-agents`/`prometheus-fastapi-instrumentator` source and a
@@ -94,7 +94,7 @@ downloads the ~1GB turn-detector/VAD model cache — expected, not a hang. Then:
 docker compose ps                       # everything healthy?
 curl localhost:8000/health              # {"status": "up"}
 curl localhost:8000/readyz              # {"status": "ready"} — actually round-trips Postgres
-curl -H "X-API-Key: $API_KEY" localhost:8000/patients
+curl localhost:8000/patients
 ```
 
 > **Don't run this worker at the same time as the Railway deployment.** Both register under
@@ -164,9 +164,9 @@ covers S3 access, so no MinIO on that box at all). Route53 record creation is op
 ## Verification checklist
 
 0. **Railway (do this one — it's the live submission path)**: follow `RAILWAY.md`, then call
-   `+1 484 317 4139` and confirm `GET /patients` (with the API key) shows the new row in
-   Railway's Postgres. Check both services' Railway log viewers for a clean deploy — worker
-   should log `"registered worker"` once connected to LiveKit Cloud.
+   `+1 484 317 4139` and confirm `GET /patients` shows the new row in Railway's Postgres. Check
+   both services' Railway log viewers for a clean deploy — worker should log `"registered
+   worker"` once connected to LiveKit Cloud.
 1. `uv run ruff check . && uv run python -m pytest -q` — should already be green; re-run after
    any change.
 2. `docker compose --profile local-s3 up -d --build` → `docker compose ps` all healthy; `docker
@@ -176,16 +176,15 @@ covers S3 access, so no MinIO on that box at all). Route53 record creation is op
    deployment** — see the caution in the Quickstart section above.
 3. With the Compose stack up instead of Railway's: call `+1 484 317 4139`, complete an intake,
    confirm `psql`/`GET /patients` shows the new Postgres row.
-4. `curl localhost:8000/patients` with no `X-API-Key` header → expect `401`.
-5. Grafana Overview dashboard shows live panels; Loki Explore, filtered by a call's `room`,
+4. Grafana Overview dashboard shows live panels; Loki Explore, filtered by a call's `room`,
    shows that call's full transcript/tool-call trace (see `docs/RUNBOOK.md`).
-6. `docker compose stop postgres` → `PostgresDown` and a `/readyz` failure both appear within
+5. `docker compose stop postgres` → `PostgresDown` and a `/readyz` failure both appear within
    ~1–2 minutes; `docker compose start postgres` clears both without restarting api/worker
    (`pool_pre_ping=True`).
-7. Backup → restore drill, exactly as described in `docs/RUNBOOK.md` — **this is the one I'd
+6. Backup → restore drill, exactly as described in `docs/RUNBOOK.md` — **this is the one I'd
    personally not skip**: an unverified restore path is worse than no backup at all, because you
    find out it doesn't work during the actual incident.
-8. `terraform fmt -check && terraform validate` in `infra/terraform/`.
+7. `terraform fmt -check && terraform validate` in `infra/terraform/`.
 
 ## Prioritization — what got the time, and why
 
@@ -238,6 +237,9 @@ grade on its own).
 - **The live Railway deployment has no alerting or backups yet** — the custom alert rules and
   backup/restore path are real and tested against the Compose stack, but not re-hosted against
   what's actually answering the phone number right now. See `RAILWAY.md`'s "Known gaps."
+- **No authentication on the patient-record API at all** — an API-key requirement was built and
+  then deliberately rolled back to keep the app matching its pre-assessment behavior. Anyone who
+  can reach the API can read/write/archive every patient record. See `docs/SECURITY.md`.
 
 ## Next steps, in the order I'd actually do them
 
@@ -252,9 +254,10 @@ grade on its own).
    graphable, not just log-greppable.
 5. Move Postgres to RDS (Multi-AZ, PITR) once on AWS; keep the same backup scripts as a second,
    independent recovery path.
-6. Add a Slack receiver to Alertmanager (Compose path) and replace the single shared `API_KEY`
-   with per-caller OAuth/OIDC once there's more than one consuming system, plus the audit-log
-   table from `docs/SECURITY.md`.
+6. Add a Slack receiver to Alertmanager (Compose path) and add real API authentication —
+   currently none, rolled back mid-build to keep the app matching its pre-assessment behavior
+   (see `docs/SECURITY.md`) — per-caller OAuth/OIDC once there's more than one consuming
+   system, plus the audit-log table from `docs/SECURITY.md`.
 7. Tag and push release images from CI instead of building on the host at deploy time, enabling
    true immutable-image rollback.
 
@@ -287,7 +290,7 @@ only ever sees the tools and instructions relevant to its step. This keeps each 
 | `app/flow.py` | `IntakeState` + the five stage agents and their handoff/validation tools; logs save outcomes for call↔record tracing. |
 | `app/schema.py` | Reusable `Annotated` validated field types and the `NewPatient` / `PatientChanges` models. |
 | `app/store.py` | `PatientStore` (SQLAlchemy) — reads, writes, archive (soft delete), and a `/readyz` ping. |
-| `app/web.py` | FastAPI service: patient CRUD (API-key gated), `/health`, `/readyz`, `/metrics`. |
+| `app/web.py` | FastAPI service: patient CRUD, `/health`, `/readyz`, `/metrics`. |
 | `app/obs.py` | JSON log formatter + request-id middleware for the API. |
 | `app/us_states.py` | Accepted USPS state/territory codes. |
 
@@ -321,7 +324,8 @@ is what actually answers `+1 484 317 4139` now.
 ### API endpoints
 
 Responses are the patient resource itself (no envelope); errors use standard status codes.
-Every route below except `/health`, `/readyz`, `/metrics` requires an `X-API-Key` header.
+No authentication on any route — see `docs/SECURITY.md` for why that's a real gap before real
+PHI, and the README's Known Risks below.
 
 - `GET /health` — liveness (static, no DB touch)
 - `GET /readyz` — readiness (real DB round-trip)
@@ -345,10 +349,10 @@ Required: `given_name`, `family_name`, `birth_date`, `sex`
 uv run python -m pytest
 ```
 
-24 tests: validation layer (phone/date/state/zip/sex/email normalization, required-field
-enforcement), the full API flow (create/read/filter/partial-update/archive), the API-key
-boundary (missing/wrong key on `/patients*`, `/health`+`/readyz` staying open), and the
-flow/state contract (`IntakeState.collected()`, the paced per-line spoken readback).
+23 tests: validation layer (phone/date/state/zip/sex/email normalization, required-field
+enforcement), the full API flow (create/read/filter/partial-update/archive, `/health`,
+`/readyz`), and the flow/state contract (`IntakeState.collected()`, the paced per-line spoken
+readback).
 
 ### Application-level trade-offs (Part 1, still true in Part 2)
 

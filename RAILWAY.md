@@ -72,7 +72,6 @@ actually listens on, matching how `docker-compose.yml` runs it.
 **Variables:**
 ```
 INTAKE_DB_URL=${{Postgres.DATABASE_URL}}
-API_KEY=<pick a real value — this gates every /patients* route>
 ```
 
 ## 5. Deploy and verify
@@ -85,8 +84,14 @@ behavior documented for the Compose path.
 ```bash
 curl https://<your-api-domain>.up.railway.app/health     # {"status": "up"}
 curl https://<your-api-domain>.up.railway.app/readyz      # {"status": "ready"} — real DB round-trip
-curl -H "X-API-Key: <your API_KEY>" https://<your-api-domain>.up.railway.app/patients
+curl https://<your-api-domain>.up.railway.app/patients
 ```
+
+> **Note:** `/patients*` has no authentication in this deployment — an API-key requirement was
+> added mid-build and then deliberately rolled back to keep the app matching its original,
+> pre-assessment behavior. Fine for this exercise; not fine for real PHI in production. See
+> `docs/SECURITY.md` for what's actually needed before that (real per-user auth, not a single
+> shared key) and the README's Known Risks.
 
 Check `worker`'s Railway logs for `"registered worker" {"agent_name": "my-agent", ...}` — that's
 confirmation it connected to LiveKit Cloud and is ready for dispatch. Then call the number.

@@ -20,10 +20,8 @@ NEW_PATIENT = dict(
 
 @pytest.fixture()
 def client():
-    # The `with` block runs the lifespan, which creates the schema. Every request from this
-    # client carries the API key by default (see conftest.py) so the CRUD tests below exercise
-    # normal authenticated behavior; test_patients_require_api_key below covers the boundary.
-    with TestClient(app, headers={"X-API-Key": "test-only-api-key"}) as c:
+    # The `with` block runs the lifespan, which creates the schema.
+    with TestClient(app) as c:
         yield c
 
 
@@ -33,20 +31,6 @@ def test_health(client):
 
 def test_readyz(client):
     assert client.get("/readyz").json() == {"status": "ready"}
-
-
-def test_patients_require_api_key():
-    # A fresh client with no default header — /health and /readyz stay open (needed by
-    # container healthchecks and Prometheus's `up` probe), but every /patients* route must
-    # reject both a missing key and a wrong one.
-    with TestClient(app) as anon:
-        assert anon.get("/health").status_code == 200
-        assert anon.get("/readyz").status_code == 200
-        assert anon.get("/patients").status_code == 401
-        assert anon.post("/patients", json=NEW_PATIENT).status_code == 401
-        assert (
-            anon.get("/patients", headers={"X-API-Key": "wrong-key"}).status_code == 401
-        )
 
 
 def test_create_normalizes_and_returns_201(client):

@@ -8,13 +8,11 @@ than wrapping everything in a success/error envelope.
 from __future__ import annotations
 
 import logging
-import os
-import secrets
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from datetime import date
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.obs import RequestIDMiddleware, configure_logging
@@ -23,25 +21,6 @@ from app.store import PatientStore, as_public_dict, create_schema
 
 configure_logging()
 log = logging.getLogger("api")
-
-_API_KEY = os.environ.get("API_KEY")
-
-
-def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
-    """Every /patients* route requires this (see `patients_router` below) — previously anyone
-    who could reach the port could dump every patient record with one unauthenticated
-    GET /patients. /health, /readyz, and /metrics stay open: they carry no PHI and container
-    healthchecks / Prometheus need to reach them without a credential.
-
-    Fails closed if API_KEY isn't configured at all, rather than silently accepting every
-    request — docker-compose.yml already makes API_KEY required (`${API_KEY:?...}`), this is
-    defense in depth for any other way the app gets started."""
-    if not _API_KEY:
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR, detail="server misconfigured: API_KEY not set"
-        )
-    if not x_api_key or not secrets.compare_digest(x_api_key, _API_KEY):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="missing or invalid API key")
 
 
 @asynccontextmanager
@@ -89,12 +68,7 @@ def ready(store: PatientStore = Depends(store_dependency)) -> dict:
     return {"status": "ready"}
 
 
-# Every route on this router requires require_api_key — declared once here rather than
-# repeated per-endpoint, so a new /patients* route can't accidentally ship unauthenticated.
-patients_router = APIRouter(dependencies=[Depends(require_api_key)])
-
-
-@patients_router.get("/patients")
+@app.get("/patients")
 def browse_patients(
     family_name: str | None = Query(default=None),
     birth_date: date | None = Query(default=None),
@@ -116,7 +90,7 @@ def browse_patients(
     return [as_public_dict(row) for row in rows]
 
 
-@patients_router.get("/patients/{record_id}")
+@app.get("/patients/{record_id}")
 def read_patient(
     record_id: str,
     store: PatientStore = Depends(store_dependency),
@@ -127,7 +101,7 @@ def read_patient(
     return as_public_dict(row)
 
 
-@patients_router.post("/patients", status_code=status.HTTP_201_CREATED)
+@app.post("/patients", status_code=status.HTTP_201_CREATED)
 def register_patient(
     body: NewPatient,
     store: PatientStore = Depends(store_dependency),
@@ -135,7 +109,7 @@ def register_patient(
     return as_public_dict(store.add(body))
 
 
-@patients_router.patch("/patients/{record_id}")
+@app.patch("/patients/{record_id}")
 def amend_patient(
     record_id: str,
     body: PatientChanges,
@@ -147,7 +121,7 @@ def amend_patient(
     return as_public_dict(store.apply_changes(row, body))
 
 
-@patients_router.delete("/patients/{record_id}")
+@app.delete("/patients/{record_id}")
 def retire_patient(
     record_id: str,
     store: PatientStore = Depends(store_dependency),
@@ -158,4 +132,3 @@ def retire_patient(
     return as_public_dict(store.archive(row))
 
 
-app.include_router(patients_router)

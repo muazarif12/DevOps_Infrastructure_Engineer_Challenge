@@ -47,7 +47,6 @@ runcmd:
       echo "POSTGRES_DB=intake"
       echo "POSTGRES_USER=intake"
       echo "POSTGRES_PASSWORD=$(get_param ${ssm_prefix}/postgres_password)"
-      echo "API_KEY=$(get_param ${ssm_prefix}/api_key)"
       echo "BACKUP_BUCKET=${backup_bucket}"
       echo "GRAFANA_ADMIN_PASSWORD=$(get_param ${ssm_prefix}/grafana_admin_password)"
       echo "PUBLIC_DOMAIN=${public_domain}"
