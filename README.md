@@ -31,6 +31,8 @@ flowchart TD
 
   Worker -. metrics :9091 .-> Prom[Prometheus]
   API -. metrics /metrics .-> Prom
+  Worker -. call started/completed .-> PushGW[Pushgateway]
+  PushGW -. scrape .-> Prom
   Prom --> Grafana
 
   Uptime[External uptime check] -.-> Worker
@@ -48,8 +50,8 @@ scale-to-zero-by-default platform (Cloud Run) alike.
 
 ### Railway — the live path
 
-Five services in one Railway project: `worker`, `Api`, `Postgres` (managed), `prometheus`,
-`grafana`.
+Six services in one Railway project: `worker`, `Api`, `Postgres` (managed), `prometheus`,
+`grafana`, `pushgateway`.
 
 - **`worker`** — built from the repo's root `Dockerfile`, default `CMD` (`uv run python -m
   app.worker start`). No public networking for call-handling — it's egress-only. Pinned to
@@ -63,14 +65,15 @@ Five services in one Railway project: `worker`, `Api`, `Postgres` (managed), `pr
   `postgres://`/`postgresql://` URL Railway hands out to `postgresql+psycopg://` (the driver
   actually installed — `psycopg2` isn't), so `INTAKE_DB_URL=${{Postgres.DATABASE_URL}}` just
   works with no manual editing.
-- **`prometheus` / `grafana`** — see Telemetry & Monitoring below.
+- **`prometheus` / `grafana` / `pushgateway`** — see Telemetry & Monitoring below.
 
 Deploying: connect the GitHub repo (three times — once per app-code service, since `worker`
 and `Api` share a Dockerfile with different start commands; `prometheus`/`grafana` each have
-their own small Dockerfile under `infra/observability/`), set each service's variables, and
-push to `main`. Every push after that redeploys automatically. First `worker` deploy takes
-~60-90s longer than later ones while it downloads the turn-detector/VAD model cache — expected,
-not a hang.
+their own small Dockerfile under `infra/observability/`), plus `pushgateway` deployed straight
+from the public `prom/pushgateway` Docker image (`source.image`, no build at all — it needs no
+config file). Set each service's variables and push to `main`; every push after that redeploys
+automatically. First `worker` deploy takes ~60-90s longer than later ones while it downloads
+the turn-detector/VAD model cache — expected, not a hang.
 
 ### GCP / Cloud Run — written assuming credentials exist, not yet applied
 
@@ -179,24 +182,22 @@ credentials.
   scheduled Railway service. This is the single biggest gap in the live deployment — see Known
   Risks.
 
-**A real bug fixed while building this:** `backup.sh` originally treated a Pushgateway
-heartbeat push as required (`curl -f`), which would have hard-failed *every single backup run*
-on GCP, where there's no Prometheus/Pushgateway deployed at all. Fixed by making that step
-optional/best-effort — the backup itself no longer depends on unrelated telemetry succeeding.
-
 ---
 
 ## Telemetry & Monitoring
 
-**Prometheus + Grafana are deployed and live on Railway** (two more services,
-`infra/observability/prometheus/Dockerfile` and `.../grafana/Dockerfile`, each baking the
-repo's config into the stock image since Railway builds from a Dockerfile, not volume mounts).
-Scraping over Railway's private networking (`worker.railway.internal:9091`,
-`api.railway.internal:8000/metrics`).
+**Prometheus + Grafana + Pushgateway are deployed and live on Railway** (three more services;
+Prometheus and Grafana each bake the repo's config into the stock image via their own small
+Dockerfile under `infra/observability/`, since Railway builds from a Dockerfile, not volume
+mounts — Pushgateway needs no config at all, deployed straight from the public
+`prom/pushgateway` image). Scraping over Railway's private networking
+(`worker.railway.internal:9091`, `api.railway.internal:8000/metrics`,
+`pushgateway.railway.internal:9091`).
 
-The Grafana dashboard (`infra/observability/grafana/dashboards/overview.json`) is deliberately
-trimmed to 5 panels, all confirmed showing real data: Worker up/down, API up/down, API
-requests/sec by status, API p95 latency, API 5xx error rate.
+The Grafana dashboard (`infra/observability/grafana/dashboards/overview.json`) has 8 panels,
+all confirmed showing real data: Worker up/down, API up/down, API requests/sec by status, API
+p95 latency, API 5xx error rate, **and three call-level panels** — Patients Registered (Total),
+Time Since Last Call Started, Last Call Outcome.
 
 **A real, verified SDK limitation — not a config mistake.** The worker's own metrics
 (`lk_agents_worker_load`, `lk_agents_active_job_count`,
@@ -210,13 +211,56 @@ zero samples. The `/metrics` endpoint itself is healthy (`200 OK`, correct `Cont
 `Content-Length: 0`) — points at the cross-process metrics-file aggregation
 (`PROMETHEUS_MULTIPROC_DIR`) not working correctly in this specific environment, for a reason
 that needs shelling into the container to diagnose further (not available through the Railway
-CLI). Only `up{job="worker"}` (scrape-based liveness) is real for the worker; the API's own
-metrics (`prometheus-fastapi-instrumentator`) are a separate, unrelated implementation and were
-confirmed working with real content.
+CLI). Only `up{job="worker"}` (scrape-based liveness) was real for the worker from the SDK's
+own instrumentation.
 
-**GCP path:** no Prometheus/Grafana deployed there — out of scope for that pass. Cloud Run's
-own native per-service request/latency/error metrics and log explorer are the closest
-equivalent with zero extra setup.
+**Real call-level metrics were added on top of that, to fix exactly this gap** (`app/metrics.py`
++ `PatientStore.count()`/`app/web.py`) — see the next section.
+
+**GCP path:** no Prometheus/Grafana/Pushgateway deployed there — out of scope for that pass.
+Cloud Run's own native per-service request/latency/error metrics and log explorer are the
+closest equivalent with zero extra setup.
+
+### Call-level metrics — the fix for "no visibility into what this system actually does"
+
+Generic REST metrics (API request rate, latency) don't answer the one question that actually
+matters for a voice agent: *is it answering calls, and are they completing successfully?* Two
+different, deliberately different mechanisms close that gap, chosen to avoid two separate
+known problems:
+
+- **`patient_records_total`** (`app/web.py`) — a genuinely cumulative count, computed via
+  `Gauge.set_function()` re-running a real SQL `COUNT` (`PatientStore.count()`) on every
+  `/metrics` scrape. Needs no Pushgateway, no cross-process aggregation, nothing extra — it
+  runs in the same process already confirmed to produce real metric content. The one caveat:
+  a returning caller's call updates their existing row rather than inserting a new one, so this
+  undercounts total call *volume* if there are many repeat callers — it's "patients on file,"
+  not "calls answered."
+- **`call_last_started_timestamp_seconds` / `call_last_completed_timestamp_seconds` /
+  `call_last_outcome`** (`app/metrics.py`, called from `app/worker.py`'s `handle_call` and
+  `app/flow.py`'s `save_record`) — pushed to the new `pushgateway` service. Call-handling code
+  runs in a fresh per-call job subprocess (LiveKit's process pool), so there's no single
+  long-lived process to scrape an in-memory counter from — the same underlying problem the
+  SDK's own (broken) mechanism was meant to solve. The naive fix — push one metric group per
+  call, keyed by room name — is a **documented Prometheus anti-pattern**: Pushgateway keeps
+  every pushed group forever unless explicitly deleted, so a unique key per call means its own
+  `/metrics` grows without bound
+  (https://prometheus.io/docs/practices/pushing/#should-i-be-using-the-pushgateway). Avoided by
+  pushing under **one fixed job name** (`patient_intake_worker`, no per-call label) via
+  `pushadd_to_gateway` (HTTP POST — merges metric *names* into what's already there, unlike
+  `push_to_gateway`'s PUT, which would wipe every other gauge under that job on each push) — the
+  same safe, bounded pattern `scripts/backup.sh`'s own heartbeat already used. The trade-off:
+  these are "last call" snapshots, not a true running counter — good for "is anything happening,
+  and how did it go," not for "how many calls total" (that's what `patient_records_total` is
+  for). Every push is best-effort (a Pushgateway hiccup, or `PUSHGATEWAY_URL` simply being unset
+  in local dev, never affects call handling — see `app/metrics.py`'s own module docstring).
+
+**Verified end-to-end, not just deployed:** after wiring this up, confirmed the full path for
+real — pushed a live test event with the actual app code
+(`python -c "from app import metrics; metrics.call_started(); metrics.call_completed(success=True)"`)
+against the deployed Pushgateway, then confirmed Prometheus picked it up with the correct
+`job="patient_intake_worker"` label (not `job="pushgateway"` — `honor_labels: true` in
+`prometheus.yml` is what makes that work) via a direct API query. The next *real* call will
+overwrite that test data with the genuine thing.
 
 ---
 
@@ -241,15 +285,23 @@ in production without separately handling log-level PHI exposure.
 
 ## Alerting
 
-`infra/observability/alert_rules.yml` defines real rules — `WorkerDown`, `APIDown`,
-`PostgresDown`, `BackupStale` (dead-man's-switch on the backup heartbeat), `HighAPIErrorRate`,
-`WorkerLoadHigh`, `HostMemoryLow`, `DiskSpaceLow` — loaded into the deployed Prometheus and
-evaluating live on its own `/alerts` page. **But nothing delivers them anywhere** — no
-Alertmanager is deployed (deliberately scoped out; see Cost Awareness). `WorkerLoadHigh`
-specifically can never fire regardless of Alertmanager, since it depends on the
-`lk_agents_worker_load` metric documented above as not populating. `PostgresDown`/
-`HostMemoryLow`/`DiskSpaceLow` need exporters (postgres-exporter, node-exporter) never deployed
-on Railway's PaaS model (no host-level access for the first two).
+`infra/observability/alert_rules.yml` defines 10 rules, loaded into the deployed Prometheus and
+evaluating live on its own `/alerts` page (confirmed all 10 report `health: ok` — no PromQL
+errors). Split by whether they can actually fire:
+
+- **Real, can fire, have live data:** `WorkerDown`, `APIDown`, `HighAPIErrorRate`, and two new
+  ones added alongside the call-level metrics above — **`NoRecentCallActivity`** (no call
+  dispatched in over an hour) and **`RecentCallFailedToSave`** (the most recent call's intake
+  failed to persist). These are the ones actually worth watching.
+- **Real rule, no data source, can never fire regardless of Alertmanager:** `WorkerLoadHigh`
+  (depends on the SDK's broken `lk_agents_worker_load`), `PostgresDown`/`HostMemoryLow`/
+  `DiskSpaceLow` (need postgres-exporter/node-exporter, never deployed on Railway's PaaS model
+  — no host-level access for those), `BackupStale` (needs a Railway-side backup loop pushing
+  the heartbeat, not wired yet — see Backup Strategy). Kept as reference/honest documentation
+  of what a fuller deployment would also want, not deleted to make the list look shorter.
+
+**But nothing delivers any of them anywhere** — no Alertmanager is deployed (deliberately
+scoped out; see Cost Awareness).
 
 **What actually notifies anyone right now:** an external uptime checker (e.g. UptimeRobot free
 tier, 5-minute interval) against three URLs — the worker's health port (predicts whether the
@@ -353,9 +405,11 @@ from reverting Cloud Build's deploy back to the bootstrap placeholder image).
 
 **Railway** (Hobby plan, upgraded from Trial mid-build — see Incident Response): `worker`
 always-on (~2-2.5GB RAM, the size of its inference subprocess), `Api` scales to zero when idle,
-`Postgres` managed, `prometheus`/`grafana` are small, low-traffic services. Modest — nowhere
-near the "$5,000/month" end of the brief's own cost-awareness question, appropriate for
-hundreds-of-calls-a-week volume.
+`Postgres` managed, `prometheus`/`grafana`/`pushgateway` are small, low-traffic services (the
+last one holds a handful of gauges under one fixed job name — deliberately bounded, see
+Telemetry & Monitoring, so it stays small rather than accumulating one group per call forever).
+Modest — nowhere near the "$5,000/month" end of the brief's own cost-awareness question,
+appropriate for hundreds-of-calls-a-week volume.
 
 **GCP** (unapplied, so no real bill yet): `worker` pinned always-on is the only always-billed
 compute; `api` scales to zero; Secret Manager, Artifact Registry, and Cloud Scheduler are all
@@ -438,7 +492,10 @@ monitoring/alerting config, `scripts/` for the backup/restore implementation.
   uptime check's narrower up/down signal.
 - **The worker's own Prometheus metrics (load, active calls) don't work**, for a reason not
   fully root-caused (see Telemetry & Monitoring) — a genuine, verified SDK-level limitation in
-  this environment, not something to paper over.
+  this environment, not something to paper over. Worked *around* (not fixed) with real
+  call-level metrics pushed to Pushgateway plus a Postgres-derived cumulative count — but those
+  are "last call" snapshots and a proxy count, not a true per-call counter (see Telemetry &
+  Monitoring's "Call-level metrics" section for exactly what that trade-off costs).
 - **PHI leaves the deployment boundary** to five subprocessors with no BAAs in place.
 - **Single always-on worker instance is a conscious SPOF** at this call volume — deliberate,
   not accidental, and documented as such under Cost Awareness.
@@ -457,10 +514,15 @@ monitoring/alerting config, `scripts/` for the backup/restore implementation.
    audit-log table described under Security Posture.
 4. Run the GCP path for real once credentials exist: `terraform validate`, `apply`, a live
    phone call against it, and a real backup/restore drill against its GCS bucket.
-5. Root-cause the worker's Prometheus multiprocess metrics gap properly — needs shell access
+5. Replace the "last call" Pushgateway snapshot with a proper `call_sessions` table (started
+   at, completed at, outcome) so call volume/completion-rate can be graphed as a true time
+   series, not just "time since the last one" — the honest next step now that the simpler
+   version has proven the pattern works end-to-end.
+6. Root-cause the worker's Prometheus multiprocess metrics gap properly — needs shell access
    inside the running container to inspect `PROMETHEUS_MULTIPROC_DIR` directly, which the
-   Railway CLI doesn't expose.
-6. Wire an OTel trace exporter (Tempo/Grafana Cloud Tempo) for real per-call LLM/STT/TTS
+   Railway CLI doesn't expose. Lower priority now that call-level visibility exists via a
+   different path.
+7. Wire an OTel trace exporter (Tempo/Grafana Cloud Tempo) for real per-call LLM/STT/TTS
    latency graphs, once the SDK version in use actually produces those spans.
 
 ---
@@ -491,6 +553,7 @@ latency, easier to extend.
 | `app/store.py` | `PatientStore` (SQLAlchemy) — reads, writes, archive (soft delete), `/readyz` ping. |
 | `app/web.py` | FastAPI service: patient CRUD, `/health`, `/readyz`, `/metrics`. |
 | `app/obs.py` | JSON log formatter + request-id middleware for the API. |
+| `app/metrics.py` | Call-level "last call" gauges pushed to Pushgateway under one fixed job name — see Telemetry & Monitoring for why. |
 | `app/us_states.py` | Accepted USPS state/territory codes. |
 
 ### API endpoints
