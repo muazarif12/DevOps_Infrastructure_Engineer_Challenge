@@ -234,22 +234,23 @@ grade on its own).
   release; "rollback" today is `git checkout` + rebuild (see `docs/RUNBOOK.md`).
 - **Alerting has no external delivery** by scoped choice — an alert firing at 3 AM is visible in
   a UI nobody is looking at until someone checks it.
-- **The live Railway deployment has no alerting or backups yet** — the custom alert rules and
-  backup/restore path are real and tested against the Compose stack, but not re-hosted against
-  what's actually answering the phone number right now. See `RAILWAY.md`'s "Known gaps."
+- **The live Railway deployment has basic up/down alerting only** (an external uptime check
+  against `worker`'s and `api`'s health endpoints) **and no backups yet** — the custom
+  Prometheus alert rules and the backup/restore path are real and tested against the Compose
+  stack, but not re-hosted against what's actually answering the phone number right now. See
+  `RAILWAY.md`'s "Known gaps" and "Monitoring" sections.
 - **No authentication on the patient-record API at all** — an API-key requirement was built and
   then deliberately rolled back to keep the app matching its pre-assessment behavior. Anyone who
   can reach the API can read/write/archive every patient record. See `docs/SECURITY.md`.
 
 ## Next steps, in the order I'd actually do them
 
-1. **Add an external uptime check** (e.g. UptimeRobot's free tier) against the live Railway
-   deployment's `/health` and `/readyz` — zero infrastructure of its own, and closes the
-   single biggest gap left by the Railway pivot (no alerting live where the phone number
-   actually is right now).
-2. Run the rest of the verification checklist above for real, on a machine with Docker.
-3. Wire the same `scripts/backup.sh`/`restore.sh` against Railway's Postgres, pointed at a
+1. Run the verification checklist above for real, on a machine with Docker.
+2. Wire the same `scripts/backup.sh`/`restore.sh` against Railway's Postgres, pointed at a
    real (free-tier) S3-compatible bucket, as a small scheduled Railway service.
+3. Deploy Prometheus + Alertmanager as two more Railway services (or point `/metrics` at
+   Grafana Cloud's free tier) so the custom alert rules — not just basic up/down — are live
+   against the actual deployment, not only the Compose stack.
 4. Wire an OTel trace exporter (Tempo/Grafana Cloud Tempo) so per-call LLM/STT/TTS latency is
    graphable, not just log-greppable.
 5. Move Postgres to RDS (Multi-AZ, PITR) once on AWS; keep the same backup scripts as a second,

@@ -96,6 +96,29 @@ curl https://<your-api-domain>.up.railway.app/patients
 Check `worker`'s Railway logs for `"registered worker" {"agent_name": "my-agent", ...}` — that's
 confirmation it connected to LiveKit Cloud and is ready for dispatch. Then call the number.
 
+## Monitoring
+
+Basic up/down alerting on this deployment, chosen deliberately over re-hosting the full
+Prometheus/Grafana/Alertmanager stack on Railway (see "Known gaps" below for why):
+
+1. `worker`'s health port (`:8081`, the same `AgentServer` health endpoint used locally) has
+   its own Railway public domain — separate from `api`'s — specifically so it can be monitored
+   externally. It carries no PHI, just a `200`/`503` liveness signal.
+2. An external uptime checker (e.g. UptimeRobot's free tier, 5-minute interval) polls three
+   URLs and alerts on failure:
+   - `https://<worker-domain>.up.railway.app/` — is the worker itself alive and registered
+     with LiveKit; this is the one that actually predicts whether the phone number will be
+     answered.
+   - `https://<api-domain>.up.railway.app/health` — is the API process up at all.
+   - `https://<api-domain>.up.railway.app/readyz` — does the API's database connection
+     actually work; catches a Postgres problem that `/health` deliberately ignores.
+
+This is real, external, zero-infrastructure alerting — not a dashboard nobody's watching. It
+doesn't replicate the custom rule *logic* in `infra/observability/alert_rules.yml`
+(`BackupStale`'s dead-man's-switch, `HighAPIErrorRate`'s threshold, etc.) — those stay
+demonstrated against the Compose stack, and moving them here is the next step, not something
+silently dropped.
+
 ## Operating this deployment
 
 - **Logs**: each service's Railway dashboard tab has a live, searchable log viewer — the
@@ -114,11 +137,13 @@ confirmation it connected to LiveKit Cloud and is ready for dispatch. Then call 
 
 ## Known gaps versus the AWS/Compose design (honest, not hidden)
 
-- **No custom alerting** (`WorkerDown`/`BackupStale`/etc. from `infra/observability/
-  alert_rules.yml`) is live against this deployment — those rules are real and tested against
-  the local Compose stack, just not re-hosted here. Cheapest next step: an external uptime
-  checker (e.g. UptimeRobot's free tier) against `/health` and `/readyz`, since that needs no
-  Railway-side infrastructure at all.
+- **Basic up/down alerting only** — the external uptime check (see "Monitoring" above) tells
+  you *that* something's wrong within ~5 minutes, but not the specific *why* that the custom
+  Prometheus rules give (`BackupStale`'s dead-man's-switch, `HighAPIErrorRate`'s threshold,
+  `WorkerLoadHigh`, `HostMemoryLow`). Those rules are real and tested against the local Compose
+  stack, just not re-hosted against this deployment. Next step if needed: either deploy
+  Prometheus + Alertmanager as two more Railway services scraping over private networking, or
+  point the app's existing `/metrics` endpoints at Grafana Cloud's free tier instead.
 - **No automated backups configured yet for this Postgres** — check Railway's own backup
   offering for your plan tier first (Railway provides some level of managed Postgres backup
   depending on plan); `scripts/backup.sh`/`restore.sh` still work unchanged against any
