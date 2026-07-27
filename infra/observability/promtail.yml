@@ -1,0 +1,27 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Docker service discovery auto-finds every running container (worker, api, postgres, caddy,
+  # ...) with no per-service scrape config to maintain — new services just show up. The worker
+  # already tags its own logs with {"room": "..."} per call (app/worker.py), so `{container=~
+  # "patient-intake-voice-worker.*"} | json | room="RM_..."` in Grafana Explore is how you trace
+  # one call end-to-end (see docs/RUNBOOK.md).
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: [__meta_docker_container_name]
+        target_label: container
+        regex: "/(.*)"
+        replacement: "$1"
+      - source_labels: [__meta_docker_container_log_stream]
+        target_label: stream

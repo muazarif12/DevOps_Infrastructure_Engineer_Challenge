@@ -1,0 +1,41 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+scrape_configs:
+  # The LiveKit worker's own exporter (see AgentServer(prometheus_port=..., ...) in
+  # app/worker.py) — lk_agents_worker_load, lk_agents_active_job_count,
+  # lk_agents_child_process_count, lk_agents_proc_initialize_duration_seconds.
+  - job_name: worker
+    static_configs:
+      - targets: ["worker:9091"]
+
+  # prometheus-fastapi-instrumentator (app/web.py) — http_requests_total,
+  # http_request_duration_seconds, by handler/method/status ("2xx"/"4xx"/"5xx").
+  - job_name: api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # honor_labels: the `job` label pushed by backup.sh (job="backup") must win over
+  # Pushgateway's own target label, otherwise every pushed metric collapses under job="pushgateway".
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]

@@ -1,0 +1,35 @@
+# Secrets — must never enter an image layer.
+.env
+.env.local
+.env.*.local
+
+# Local database files — these contain real PHI.
+*.db
+*.sqlite
+*.sqlite3
+
+# Host virtualenv (Windows) would clobber the Linux venv built inside the image.
+.venv/
+venv/
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# VCS and editor noise
+.git/
+.github/
+.gitignore
+.vscode/
+.idea/
+
+# Docs and infra are not needed at runtime; excluding them keeps the build
+# context small and avoids cache busts on doc-only edits.
+docs/
+infra/
+*.md
+*.pdf
+docker-compose*.yml

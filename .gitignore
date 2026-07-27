@@ -1,0 +1,39 @@
+# Secrets and local runtime config
+.env
+.env.local
+.env.*.local
+
+# Terraform state and inputs — state files contain resource attributes (incl. some secret
+# values passed as arguments) in plaintext; tfvars files hold the actual secret inputs.
+# terraform.tfvars.example is deliberately NOT matched by this (no *.example exclusion below
+# needed since the pattern only matches the literal names, not the .example suffix).
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+crash.log
+crash.*.log
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Challenge brief PDF — not source, and may be handled as provided-in-confidence material
+*.pdf
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Editor noise
+.vscode/
+.idea/

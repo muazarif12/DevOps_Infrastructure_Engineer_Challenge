@@ -1,0 +1,27 @@
+# Copy to terraform.tfvars (or secrets.auto.tfvars for just the secret block) and fill in.
+# NEVER commit the filled-in file — *.tfvars is already in .gitignore, terraform.tfvars.example
+# is the only tfvars file meant to be tracked.
+
+aws_region    = "us-east-1"
+environment   = "prod"
+public_domain = "candidate-name.stratus-eval.dev" # the subdomain provided for this exercise
+git_repo_url  = "https://github.com/<you>/PatientIntakeVoice.git"
+
+# Leave false unless route53_zone_id below is a zone this AWS account/credentials can actually
+# write to — otherwise create the A record manually using the `public_ip` output.
+manage_dns      = false
+route53_zone_id = null
+
+backup_bucket_name = "patient-intake-voice-backups-change-me" # must be globally unique
+
+# instance_type, root_volume_size_gb, ssh_key_name, allowed_ssh_cidr all have reasonable
+# defaults in variables.tf — override here only if needed.
+
+# --- Secrets (sensitive — better supplied via TF_VAR_* env vars or a separate, gitignored
+# secrets.auto.tfvars than committed even to a local example) ---
+livekit_url            = "wss://your-project.livekit.cloud"
+livekit_api_key        = "..."
+livekit_api_secret     = "..."
+postgres_password      = "..."
+api_key                = "..."
+grafana_admin_password = "..."

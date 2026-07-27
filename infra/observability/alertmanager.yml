@@ -1,0 +1,14 @@
+# Scoped choice for this exercise: alerts fire and are visible in the Alertmanager/Grafana UI,
+# with no external delivery configured (no Slack/email/PagerDuty). Rules exist and evaluate for
+# real (see alert_rules.yml) — wiring a receiver is a config change here, not new code. To add
+# Slack, for example: give the receiver a `slack_configs: [{api_url: "https://hooks.slack.com/..."}]`
+# block and point `route.receiver` at it.
+route:
+  receiver: default
+  group_by: ["alertname"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default

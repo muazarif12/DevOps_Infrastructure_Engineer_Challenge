@@ -1,0 +1,97 @@
+groups:
+  - name: patient-intake-voice
+    rules:
+      - alert: WorkerDown
+        expr: up{job="worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Voice agent worker is unreachable"
+          description: >-
+            Prometheus has not been able to scrape the worker's :9091/metrics for 2 minutes.
+            Inbound calls will not be answered. See docs/RUNBOOK.md#agent-not-answering-calls.
+
+      - alert: APIDown
+        expr: up{job="api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Patient records API is unreachable"
+          description: >-
+            Prometheus has not been able to scrape the API's :8000/metrics for 2 minutes.
+            Staff-facing record lookups/updates are unavailable.
+
+      - alert: PostgresDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Postgres exporter cannot reach the database"
+          description: >-
+            Both the API and the worker persist patient data to this database. New intakes
+            will fail to save. See docs/RUNBOOK.md#database-down.
+
+      - alert: BackupStale
+        expr: (time() - backup_last_success_timestamp_seconds) > 5400
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful backup in over 90 minutes"
+          description: >-
+            backup.sh runs every 15 minutes (see docker-compose.yml); missing 6+ in a row
+            means the backup loop has silently stopped. Dead-man's-switch style alert — the
+            absence of a heartbeat is the signal, not an explicit failure. See
+            docs/RUNBOOK.md#restore-from-backup.
+
+      - alert: HighAPIErrorRate
+        expr: >-
+          sum(rate(http_requests_total{job="api", status="5xx"}[5m]))
+          /
+          sum(rate(http_requests_total{job="api"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API 5xx rate above 5% over 5 minutes"
+          description: >-
+            Check Loki for {container="patient-intake-voice-api-1"} around this time to find
+            the tracebacks (app/obs.py logs one structured line per request, success or failure).
+
+      - alert: WorkerLoadHigh
+        expr: lk_agents_worker_load > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker CPU load above 90% for 5 minutes"
+          description: >-
+            lk_agents_worker_load is the SDK's own load signal, used to throttle job
+            dispatch — sustained high load means calls may start queuing or getting rejected.
+            Consider scaling to a second worker instance.
+
+      - alert: HostMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Less than 10% memory available on the host"
+          description: >-
+            Host-wide, not worker-specific — the worker's Prometheus multiprocess mode does
+            not expose per-process RSS. The inference process alone runs ~2.6 GB observed
+            locally; on a single-host deployment this is shared with Postgres, Prometheus,
+            Loki, and everything else in docker-compose.yml.
+
+      - alert: DiskSpaceLow
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Less than 10% disk free on the host"
+          description: >-
+            Postgres, Prometheus, and Loki all write to local disk in this single-host
+            deployment; this will start failing writes soon if unaddressed.
